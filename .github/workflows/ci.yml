@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20.11.1"
-      - name: Install dependencies
-        run: yarn install
-      - name: Check
-        run: yarn check-all
+        - name: Install dependencies (npm)
+          run: npm ci
+        - name: Run checks
+          run: npm run check-all
