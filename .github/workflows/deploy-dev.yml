@@ -1,3 +1,9 @@
+# deploy-dev.yml
+# 배포 전 빌드를 수행하고 빌드 결과물 존재 여부를 검증합니다.
+# 되돌리기: 이전 버전으로 파일을 복원하면 됩니다.
+# Note: This project uses react-scripts which outputs to ./build, not ./dist.
+#       If your project uses a different build tool (e.g., Vite), adjust BUILD_DIR accordingly.
+
 name: deploy-dev
 
 on:
@@ -12,32 +18,103 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Checkout the repository
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Step 2: Setup Node.js environment
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20.11.1"
+          node-version: "18"
+
+      # Step 3: Detect project directory (root, frontend, or web)
+      # Checks for package.json in root, frontend/, or web/ and sets working directory
+      - name: Detect project directory
+        id: detect
+        run: |
+          if [ -f "package.json" ]; then
+            echo "dir=." >> $GITHUB_OUTPUT
+            echo "Found package.json in root directory"
+          elif [ -f "frontend/package.json" ]; then
+            echo "dir=frontend" >> $GITHUB_OUTPUT
+            echo "Found package.json in frontend directory"
+          elif [ -f "web/package.json" ]; then
+            echo "dir=web" >> $GITHUB_OUTPUT
+            echo "Found package.json in web directory"
+          else
+            echo "::error::No package.json found in root, frontend/, or web/"
+            exit 1
+          fi
 
       - name: Set environment variables
+        working-directory: ${{ steps.detect.outputs.dir }}
         run: |
           touch .env.local
           echo "VITE_GOOGLE_CLIENT_ID=${{ secrets.VITE_GOOGLE_CLIENT_ID }}" >> .env.local
 
       - name: Remove msw files
+        working-directory: ${{ steps.detect.outputs.dir }}
         run: |
-          find ./public -name "mockServiceWorker.js" -delete
+          find ./public -name "mockServiceWorker.js" -delete || true
 
-      - name: Build & Export
+      # Step 4: Install dependencies using npm ci for clean install
+      - name: Install dependencies
+        working-directory: ${{ steps.detect.outputs.dir }}
+        run: npm ci
+
+      # Step 5: Run the build
+      - name: Build
+        working-directory: ${{ steps.detect.outputs.dir }}
+        run: npm run build
+
+      # Step 6: Debug - List build output directory contents
+      - name: Debug - List build output
+        working-directory: ${{ steps.detect.outputs.dir }}
         run: |
-          yarn install
-          yarn build
+          echo "=== Listing directory contents ==="
+          ls -la
+          echo ""
+          echo "=== Checking for build directories ==="
+          if [ -d "dist" ]; then
+            echo "dist/ directory found:"
+            ls -la dist/
+          fi
+          if [ -d "build" ]; then
+            echo "build/ directory found:"
+            ls -la build/
+          fi
 
+      # Step 7: Verify build output exists (supports both dist and build directories)
+      # react-scripts outputs to ./build, Vite outputs to ./dist
+      - name: Verify build output exists
+        id: verify
+        working-directory: ${{ steps.detect.outputs.dir }}
+        run: |
+          if [ -d "dist" ]; then
+            echo "build_dir=dist" >> $GITHUB_OUTPUT
+            echo "Build output found in dist/"
+          elif [ -d "build" ]; then
+            echo "build_dir=build" >> $GITHUB_OUTPUT
+            echo "Build output found in build/"
+          else
+            echo "::error::Build output directory not found. Neither dist/ nor build/ exists."
+            echo "::error::Please check your build script output configuration."
+            exit 1
+          fi
+
+      # Step 8: Deploy to S3 and invalidate CloudFront
       - name: Deploy to S3 and Invalidate Cloudfront in prod mode
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ap-northeast-2
         run: |
-          aws s3 sync ./dist s3://myfirstbucket-semin --delete
+          PUBLISH_DIR="${{ steps.detect.outputs.dir }}/${{ steps.verify.outputs.build_dir }}"
+          echo "Deploying from: $PUBLISH_DIR"
+          if [ ! -d "$PUBLISH_DIR" ]; then
+            echo "::error::publish_dir does not exist: $PUBLISH_DIR"
+            exit 1
+          fi
+          aws s3 sync "$PUBLISH_DIR" s3://myfirstbucket-semin --delete
           aws cloudfront create-invalidation --distribution-id E337T7FHBW6XPO --paths "/*"
