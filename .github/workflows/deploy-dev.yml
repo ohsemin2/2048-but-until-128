@@ -26,7 +26,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "20.11.1"
 
       # Step 3: Detect project directory (root, frontend, or web)
       # Checks for package.json in root, frontend/, or web/ and sets working directory
@@ -58,15 +58,15 @@ jobs:
         run: |
           find ./public -name "mockServiceWorker.js" -delete || true
 
-      # Step 4: Install dependencies using npm ci for clean install
+      # Step 4: Install dependencies using yarn for consistency with project
       - name: Install dependencies
         working-directory: ${{ steps.detect.outputs.dir }}
-        run: npm ci
+        run: yarn install
 
       # Step 5: Run the build
       - name: Build
         working-directory: ${{ steps.detect.outputs.dir }}
-        run: npm run build
+        run: yarn build
 
       # Step 6: Debug - List build output directory contents
       - name: Debug - List build output
