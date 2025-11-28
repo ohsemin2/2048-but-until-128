@@ -33,11 +33,66 @@ jobs:
           yarn install
           yarn build
 
-      - name: Deploy to S3 and Invalidate Cloudfront in prod mode
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Ensure dev CloudFront and deploy to /dev
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ap-northeast-2
+          BUCKET: myfirstbucket-semin
+          EXISTING_DEV_CF_ID: ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_ID_DEV }}
         run: |
-          aws s3 sync ./build s3://myfirstbucket-semin --delete
-          aws cloudfront create-invalidation --distribution-id E337T7FHBW6XPO --paths "/*"
+          set -euo pipefail
+          echo "Installing jq"
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+          ORIGIN_DOMAIN="$BUCKET.s3.amazonaws.com"
+
+          if [ -z "${EXISTING_DEV_CF_ID:-}" ]; then
+            echo "No existing dev CloudFront distribution id provided. Creating a new distribution..."
+            cat > dist-config.json <<EOF
+{
+  "CallerReference": "dev-$(date +%s)",
+  "Comment": "Dev distribution for ${BUCKET}",
+  "Enabled": true,
+  "Origins": {
+    "Quantity": 1,
+    "Items": [
+      {
+        "Id": "S3-${BUCKET}",
+        "DomainName": "${ORIGIN_DOMAIN}",
+        "S3OriginConfig": {}
+      }
+    ]
+  },
+  "DefaultCacheBehavior": {
+    "TargetOriginId": "S3-${BUCKET}",
+    "ViewerProtocolPolicy": "redirect-to-https",
+    "TrustedSigners": { "Enabled": false, "Quantity": 0 },
+    "ForwardedValues": { "QueryString": false, "Cookies": { "Forward": "none" } },
+    "MinTTL": 0
+  }
+}
+EOF
+
+            aws cloudfront create-distribution --distribution-config file://dist-config.json > cf-create-out.json
+            DEV_CF_ID=$(jq -r .Distribution.Id cf-create-out.json)
+            DEV_CF_DOMAIN=$(jq -r .Distribution.DomainName cf-create-out.json)
+            echo "Created dev CloudFront distribution: $DEV_CF_ID ($DEV_CF_DOMAIN)"
+          else
+            DEV_CF_ID="$EXISTING_DEV_CF_ID"
+            DEV_CF_DOMAIN=$(aws cloudfront get-distribution --id "$DEV_CF_ID" | jq -r .Distribution.DomainName)
+            echo "Using existing dev CloudFront distribution: $DEV_CF_ID ($DEV_CF_DOMAIN)"
+          fi
+
+          echo "Syncing to S3 under /dev prefix"
+          aws s3 sync ./build s3://$BUCKET/dev --delete
+
+          echo "Creating invalidation for /dev/* on distribution $DEV_CF_ID"
+          aws cloudfront create-invalidation --distribution-id "$DEV_CF_ID" --paths "/dev/*"
+
+          echo "Dev CloudFront domain: $DEV_CF_DOMAIN"
