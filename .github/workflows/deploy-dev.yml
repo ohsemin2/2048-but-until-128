@@ -1,3 +1,13 @@
+# deploy-dev.yml
+# 
+# 이 워크플로우는 main 브랜치에 push되거나 수동으로 트리거될 때 실행됩니다.
+# 빌드 후 S3로 배포하고 CloudFront를 무효화합니다.
+#
+# 주의: react-scripts는 ./build 디렉토리로 출력합니다 (Vite는 ./dist).
+# 빌드 도구를 변경하는 경우 PUBLISH_DIR 환경 변수를 업데이트하세요.
+#
+# 되돌리기: 이전 커밋으로 되돌리려면 git revert를 사용하세요.
+
 name: deploy-dev
 
 on:
@@ -6,38 +16,78 @@ on:
       - main
   workflow_dispatch:
 
+# 빌드 출력 디렉토리 설정 (react-scripts: build, Vite: dist)
+env:
+  PUBLISH_DIR: ./build
+  NODE_VERSION: "20.11.1"
+
 jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
 
     steps:
+      # 1. 리포지토리 체크아웃
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 2. Node.js 설정
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20.11.1"
+          node-version: ${{ env.NODE_VERSION }}
 
+      # 3. 환경 변수 설정
       - name: Set environment variables
         run: |
           touch .env.local
           echo "VITE_GOOGLE_CLIENT_ID=${{ secrets.VITE_GOOGLE_CLIENT_ID }}" >> .env.local
 
+      # 4. MSW 파일 제거 (프로덕션 빌드에서 불필요)
       - name: Remove msw files
         run: |
           find ./public -name "mockServiceWorker.js" -delete
 
-      - name: Build & Export
-        run: |
-          yarn install
-          yarn build
+      # 5. 의존성 설치 및 빌드
+      - name: Install dependencies
+        run: yarn install
 
-      - name: Deploy to S3 and Invalidate Cloudfront in prod mode
+      - name: Build
+        run: yarn build
+
+      # 6. 디버그: 빌드 출력 확인 (문제 해결에 도움)
+      - name: Debug - List build output
+        run: |
+          echo "=== 현재 디렉토리 구조 ==="
+          ls -la
+          echo ""
+          echo "=== 빌드 출력 디렉토리 (${{ env.PUBLISH_DIR }}) 확인 ==="
+          if [ -d "${{ env.PUBLISH_DIR }}" ]; then
+            ls -la ${{ env.PUBLISH_DIR }}
+          else
+            echo "경고: ${{ env.PUBLISH_DIR }} 디렉토리가 존재하지 않습니다!"
+          fi
+
+      # 7. 빌드 출력 디렉토리 존재 확인
+      - name: Verify build output exists
+        run: |
+          if [ ! -d "${{ env.PUBLISH_DIR }}" ]; then
+            echo "::error::빌드 출력 디렉토리 '${{ env.PUBLISH_DIR }}'가 존재하지 않습니다."
+            echo "::error::빌드가 실패했거나 빌드 출력 경로가 잘못되었을 수 있습니다."
+            echo "::error::package.json의 build 스크립트와 PUBLISH_DIR 환경 변수를 확인하세요."
+            echo ""
+            echo "현재 디렉토리 내용:"
+            ls -la
+            exit 1
+          fi
+          echo "✓ 빌드 출력 디렉토리 '${{ env.PUBLISH_DIR }}'가 확인되었습니다."
+
+      # 8. S3 배포 및 CloudFront 무효화
+      - name: Deploy to S3 and Invalidate Cloudfront
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ap-northeast-2
         run: |
-          aws s3 sync ./dist s3://myfirstbucket-semin --delete
+          aws s3 sync ${{ env.PUBLISH_DIR }} s3://myfirstbucket-semin --delete
           aws cloudfront create-invalidation --distribution-id E337T7FHBW6XPO --paths "/*"
