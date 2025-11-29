@@ -36,5 +36,5 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ap-northeast-2
         run: |
-          aws s3 sync ./build s3://myfirstbucket-semin --delete
-          aws cloudfront create-invalidation --distribution-id E337T7FHBW6XPO --paths "/*"
+          aws s3 sync ./build s3://mysecondbucket-semin --delete
+          aws cloudfront create-invalidation --distribution-id E2HTACED4FKLKY --paths "/*"
